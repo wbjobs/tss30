@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🎵 音频情绪氛围灯</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="ambient-bg" class="ambient-bg"></div>
+  <div id="ambient-overlay" class="ambient-overlay"></div>
+
+  <div class="app-container">
+    <header class="app-header">
+      <h1 class="title">🎵 音频情绪氛围灯</h1>
+      <p class="subtitle">实时捕捉音频 · 情绪模型映射 · 沉浸式氛围</p>
+    </header>
+
+    <section class="control-panel">
+      <div class="control-row">
+        <button id="btn-start" class="btn btn-primary">🎙️ 启动麦克风</button>
+        <button id="btn-stop" class="btn btn-secondary" disabled>⏹️ 停止</button>
+        <button id="btn-toggle-replay" class="btn btn-tertiary">📊 历史回放</button>
+        <button id="btn-clear" class="btn btn-danger">🗑️ 清空数据</button>
+      </div>
+
+      <div class="status-row">
+        <div id="status-indicator" class="status-indicator status-idle">
+          <span class="status-dot"></span>
+          <span id="status-text">未启动</span>
+        </div>
+        <div class="emotion-display">
+          <span class="emotion-label">当前情绪:</span>
+          <span id="emotion-label" class="emotion-value">—</span>
+        </div>
+        <div class="color-display">
+          <div id="color-preview" class="color-preview"></div>
+          <span id="color-hex" class="color-hex">#000000</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="visualizer-panel">
+      <div class="viz-section">
+        <h3>频谱图</h3>
+        <canvas id="canvas-spectrum" class="viz-canvas"></canvas>
+      </div>
+      <div class="viz-section">
+        <h3>波形图</h3>
+        <canvas id="canvas-waveform" class="viz-canvas"></canvas>
+      </div>
+      <div class="viz-section">
+        <h3>频段能量</h3>
+        <div class="band-bars">
+          <div class="band-item">
+            <div class="band-label">低频 (鼓点)</div>
+            <div class="band-bar"><div id="bar-low" class="band-fill band-low"></div></div>
+            <div id="val-low" class="band-value">0%</div>
+          </div>
+          <div class="band-item">
+            <div class="band-label">中频 (人声)</div>
+            <div class="band-bar"><div id="bar-mid" class="band-fill band-mid"></div></div>
+            <div id="val-mid" class="band-value">0%</div>
+          </div>
+          <div class="band-item">
+            <div class="band-label">高频 (镲片)</div>
+            <div class="band-bar"><div id="bar-high" class="band-fill band-high"></div></div>
+            <div id="val-high" class="band-value">0%</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="replay-panel" class="replay-panel hidden">
+      <div class="replay-header">
+        <h3>📈 历史情绪曲线</h3>
+        <div class="replay-controls">
+          <label>
+            时间范围:
+            <select id="replay-range">
+              <option value="300000">最近 5 分钟</option>
+              <option value="900000" selected>最近 15 分钟</option>
+              <option value="3600000">最近 1 小时</option>
+              <option value="0">全部历史</option>
+            </select>
+          </label>
+          <button id="btn-refresh-replay" class="btn btn-small">🔄 刷新</button>
+          <button id="btn-play-replay" class="btn btn-small btn-primary">▶️ 自动播放</button>
+        </div>
+      </div>
+      <canvas id="canvas-replay" class="replay-canvas"></canvas>
+      <div id="replay-info" class="replay-info">
+        数据点: <span id="replay-count">0</span> |
+        时间跨度: <span id="replay-span">—</span>
+      </div>
+    </section>
+
+    <section class="stats-panel">
+      <div class="stat-card">
+        <div class="stat-title">总能量</div>
+        <div id="stat-energy" class="stat-value">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">主频段</div>
+        <div id="stat-dominance" class="stat-value">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">快照数</div>
+        <div id="stat-snapshots" class="stat-value">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">上次上传</div>
+        <div id="stat-last-upload" class="stat-value">—</div>
+      </div>
+    </section>
+  </div>
+
+  <script src="js/emotionModel.js"></script>
+  <script src="js/audioAnalyzer.js"></script>
+  <script src="js/historyChart.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
