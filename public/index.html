@@ -95,6 +95,40 @@
       </div>
     </section>
 
+    <section class="peers-panel">
+      <div class="peers-header">
+        <h3>🌐 多设备联控</h3>
+        <div class="peers-status">
+          <span id="ws-status" class="ws-status ws-disconnected">● 离线</span>
+          <span class="peers-count">在线: <span id="peers-count">0</span></span>
+        </div>
+      </div>
+      <div class="peers-controls">
+        <label class="mix-control">
+          <span>本地权重</span>
+          <input id="mix-slider" type="range" min="0" max="100" value="60" />
+          <span id="mix-value">60%</span>
+        </label>
+      </div>
+      <div id="peers-list" class="peers-list">
+        <div class="peer-empty">暂无其他设备在线</div>
+      </div>
+      <div class="peers-legend">
+        <div class="legend-item">
+          <div class="legend-dot legend-local"></div>
+          <span>本地颜色</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot legend-remote"></div>
+          <span>远程混合色</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot legend-result"></div>
+          <span>输出颜色</span>
+        </div>
+      </div>
+    </section>
+
     <section class="stats-panel">
       <div class="stat-card">
         <div class="stat-title">总能量</div>
@@ -118,6 +152,7 @@
   <script src="js/emotionModel.js"></script>
   <script src="js/audioAnalyzer.js"></script>
   <script src="js/historyChart.js"></script>
+  <script src="js/wsClient.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

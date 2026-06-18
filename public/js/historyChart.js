@@ -108,22 +108,79 @@
       const getX = (i) => padL + (chartW * i) / Math.max(1, n - 1);
       const getY = (val) => padT + chartH * (1 - Math.min(1, Math.max(0, val)));
 
+      const isSilentItem = (snap) =>
+        (snap.emotion_label === '静默') ||
+        (snap.dominance === 'silence') ||
+        (snap.overall_energy !== undefined && snap.overall_energy < 0.022);
+
+      const silenceRanges = [];
+      let inSilence = false, rangeStart = 0;
+      for (let i = 0; i < n; i++) {
+        const silent = isSilentItem(this.data[i]);
+        if (silent && !inSilence) {
+          inSilence = true;
+          rangeStart = i;
+        } else if (!silent && inSilence) {
+          inSilence = false;
+          silenceRanges.push([rangeStart, i - 1]);
+        }
+      }
+      if (inSilence) silenceRanges.push([rangeStart, n - 1]);
+
+      silenceRanges.forEach(([s, e]) => {
+        const x0 = s === 0 ? padL : getX(s);
+        const x1 = e === n - 1 ? padL + chartW : getX(e + 1);
+        const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH);
+        grad.addColorStop(0, 'rgba(140,145,170,0.18)');
+        grad.addColorStop(0.5, 'rgba(120,125,150,0.26)');
+        grad.addColorStop(1, 'rgba(100,105,130,0.18)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x0, padT, Math.max(1, x1 - x0), chartH);
+
+        ctx.strokeStyle = 'rgba(160,165,190,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x0, padT);
+        ctx.lineTo(x0, padT + chartH);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x1, padT);
+        ctx.lineTo(x1, padT + chartH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (x1 - x0 > 60) {
+          ctx.fillStyle = 'rgba(180,185,210,0.9)';
+          ctx.font = '10px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          const durMs = this.data[e].timestamp - this.data[s].timestamp;
+          const durStr = durMs > 0 ? this._fmtDuration(durMs) : '';
+          const label = durStr ? `静默 ${durStr}` : '静默';
+          ctx.fillText(label, (x0 + x1) / 2, padT + 14);
+        }
+      });
+
       for (let i = 0; i < n; i++) {
         const x = getX(i);
         const snap = this.data[i];
-        const r = snap.r / 255, g = snap.g / 255, b = snap.b / 255;
-        const color = `rgb(${snap.r},${snap.g},${snap.b})`;
+        const silent = isSilentItem(snap);
+        const color = silent
+          ? 'rgba(140,145,170,0.9)'
+          : `rgb(${snap.r},${snap.g},${snap.b})`;
 
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.9;
-        ctx.beginPath();
-        ctx.moveTo(x, padT + chartH);
-        ctx.lineTo(x, getY(snap.overall_energy));
-        ctx.stroke();
+        if (!silent) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.9;
+          ctx.beginPath();
+          ctx.moveTo(x, padT + chartH);
+          ctx.lineTo(x, getY(snap.overall_energy));
+          ctx.stroke();
+        }
 
-        const dotR = i < (highlightCount || n) ? 2.5 : 1.5;
-        ctx.globalAlpha = 1;
+        const dotR = silent ? 1.2 : (i < (highlightCount || n) ? 2.5 : 1.5);
+        ctx.globalAlpha = silent ? 0.7 : 1;
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(x, getY(snap.overall_energy), dotR, 0, Math.PI * 2);
@@ -150,14 +207,14 @@
         }
       }
 
-      const labels = ['激昂', '活力', '欢快', '焦躁', '舒缓', '宁静', '忧郁', '神秘', '平静'];
-      const palette = ['#ff4444', '#ff8844', '#ffdd44', '#ffee44', '#44aaff', '#44dddd', '#8866cc', '#cc66cc', '#66cc99'];
+      const labels = ['激昂', '活力', '欢快', '焦躁', '舒缓', '宁静', '忧郁', '神秘', '平静', '静默'];
+      const palette = ['#ff4444', '#ff8844', '#ffdd44', '#ffee44', '#44aaff', '#44dddd', '#8866cc', '#cc66cc', '#66cc99', '#8c91aa'];
       const legendX = padL;
       const legendY = padT - 8;
       ctx.font = '9px -apple-system, sans-serif';
       labels.forEach((label, i) => {
-        const lx = legendX + i * 70;
-        if (lx + 60 > padL + chartW) return;
+        const lx = legendX + i * 60;
+        if (lx + 50 > padL + chartW) return;
         ctx.fillStyle = palette[i];
         ctx.fillRect(lx, legendY - 6, 10, 10);
         ctx.fillStyle = 'rgba(200,200,255,0.6)';

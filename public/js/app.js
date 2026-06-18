@@ -6,10 +6,20 @@
   const state = {
     analyzer: null,
     chart: null,
+    ws: null,
+    deviceId: null,
     running: false,
+    isSilent: false,
+    silenceEnteredAt: null,
     lastSnapshotTime: 0,
+    lastWsSendTime: 0,
     snapshotInterval: 5000,
+    wsSendInterval: 120,
     snapshotCount: 0,
+    mixLocalWeight: 0.6,
+    remoteMerged: null,
+    localResult: null,
+    peerCount: 0,
   };
 
   const els = {
@@ -43,6 +53,14 @@
     statDominance: $('stat-dominance'),
     statSnapshots: $('stat-snapshots'),
     statLastUpload: $('stat-last-upload'),
+    wsStatus: $('ws-status'),
+    peersCount: $('peers-count'),
+    peersList: $('peers-list'),
+    mixSlider: $('mix-slider'),
+    mixValue: $('mix-value'),
+    legendLocal: $('.legend-local'),
+    legendRemote: $('.legend-remote'),
+    legendResult: $('.legend-result'),
   };
 
   let ctxSpec, ctxWave;
@@ -154,26 +172,58 @@
   }
 
   function updateUI(result) {
-    const { features, rgb, hsl, emotion_label, dominance } = result;
+    const { features, rgb, hsl, emotion_label, dominance, is_silent, silence_duration_ms } = result;
+    state.localResult = result;
 
     const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
     els.colorPreview.style.background = hex;
     els.colorHex.textContent = hex.toUpperCase();
     els.emotionLabel.textContent = emotion_label;
 
-    const bgGrad = `radial-gradient(ellipse at 30% 20%, hsla(${hsl.h}, ${hsl.s}%, ${Math.min(hsl.l + 10, 80)}%, 0.6) 0%,
-                hsla(${hsl.h}, ${hsl.s}%, ${Math.min(hsl.l + 5, 65)}%, 0.4) 30%,
-                hsl(${hsl.h}, ${hsl.s}%, ${Math.max(hsl.l - 20, 10)}%) 70%,
-                hsl(${hsl.h}, ${Math.max(hsl.s - 10, 10)}%, ${Math.max(hsl.l - 35, 5)}%) 100%)`;
-    els.bg.style.background = bgGrad;
+    let outputRgb = rgb;
+    let outputHsl = hsl;
+    let outputEmotion = emotion_label;
 
-    updateBandBars(result);
+    if (state.remoteMerged && !is_silent) {
+      const localW = state.mixLocalWeight;
+      const remoteW = 1 - localW;
+      const mixed = window.EmotionModel.blendColorWeighted(
+        { r: rgb.r, g: rgb.g, b: rgb.b },
+        state.remoteMerged.rgb,
+        localW
+      );
+      outputRgb = mixed.rgb;
+      outputHsl = mixed.hsl;
+      outputEmotion = outputEmotion + ' × 融合';
+    }
+
+    if (is_silent) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 800);
+      els.bg.style.background =
+        `radial-gradient(ellipse at 30% 20%, rgba(80,80,100,${0.15 + pulse * 0.1}) 0%,
+         rgba(50,50,70,${0.1 + pulse * 0.08}) 30%,
+         rgb(20,20,30) 70%,
+         rgb(8,8,16) 100%)`;
+      updateBandBars({ features: { band_ratios: { low: 0, mid: 0, high: 0 } } });
+      els.statDominance.textContent = '静默';
+      els.emotionLabel.style.color = 'rgba(180,180,200,0.7)';
+    } else {
+      const bgGrad = `radial-gradient(ellipse at 30% 20%, hsla(${outputHsl.h}, ${outputHsl.s}%, ${Math.min(outputHsl.l + 10, 80)}%, 0.6) 0%,
+                  hsla(${outputHsl.h}, ${outputHsl.s}%, ${Math.min(outputHsl.l + 5, 65)}%, 0.4) 30%,
+                  hsl(${outputHsl.h}, ${outputHsl.s}%, ${Math.max(outputHsl.l - 20, 10)}%) 70%,
+                  hsl(${outputHsl.h}, ${Math.max(outputHsl.s - 10, 10)}%, ${Math.max(outputHsl.l - 35, 5)}%) 100%)`;
+      els.bg.style.background = bgGrad;
+      updateBandBars(result);
+      els.statDominance.textContent = { low: '低频', mid: '中频', high: '高频' }[dominance] || '—';
+      els.emotionLabel.style.color = '';
+    }
 
     els.statEnergy.textContent = (features.overall_energy * 100).toFixed(0);
-    els.statDominance.textContent = { low: '低频', mid: '中频', high: '高频' }[dominance] || '—';
+    updateLegendColors(outputRgb);
   }
 
   async function uploadSnapshot(result) {
+    if (result.is_silent) return null;
     const { features, rgb, hsl, emotion_label, dominance } = result;
     const payload = {
       timestamp: Date.now(),
@@ -215,15 +265,31 @@
   }
 
   async function handleFrame({ frequencyData, rawFrequency, timeDomainData }) {
-    const result = window.EmotionModel.processAudioFrame(frequencyData);
+    const now = Date.now();
+    const result = window.EmotionModel.processAudioFrame(frequencyData, now);
     updateUI(result);
     drawSpectrum(rawFrequency);
     drawWaveform(timeDomainData);
 
-    const now = Date.now();
+    if (result.is_silent !== state.isSilent) {
+      state.isSilent = result.is_silent;
+      if (result.is_silent) {
+        state.silenceEnteredAt = now;
+        setStatus('silent', '静默中（已暂停记录）');
+      } else {
+        state.silenceEnteredAt = null;
+        setStatus('active', '采集中');
+      }
+    }
+
     if (now - state.lastSnapshotTime >= state.snapshotInterval) {
       state.lastSnapshotTime = now;
       uploadSnapshot(result);
+    }
+
+    if (state.ws && state.ws.isConnected && now - state.lastWsSendTime >= state.wsSendInterval) {
+      state.lastWsSendTime = now;
+      state.ws.sendColor(result);
     }
   }
 
@@ -234,6 +300,8 @@
       state.analyzer.onFrame = handleFrame;
       await state.analyzer.start();
       state.running = true;
+      state.isSilent = false;
+      state.silenceEnteredAt = null;
       state.lastSnapshotTime = Date.now();
       setStatus('active', '采集中');
       els.btnStart.disabled = true;
@@ -250,6 +318,8 @@
       state.analyzer = null;
     }
     state.running = false;
+    state.isSilent = false;
+    state.silenceEnteredAt = null;
     setStatus('idle', '已停止');
     els.btnStart.disabled = false;
     els.btnStop.disabled = true;
@@ -346,6 +416,106 @@
     }
   }
 
+  function initWS() {
+    if (state.ws) return;
+    const ws = new window.MoodLightWS(`ws://${window.location.host}/ws`);
+    state.ws = ws;
+
+    ws.onConnect = (deviceId) => {
+      state.deviceId = deviceId;
+      els.wsStatus.textContent = '● 在线';
+      els.wsStatus.classList.remove('ws-disconnected');
+      els.wsStatus.classList.add('ws-connected');
+    };
+
+    ws.onDisconnect = () => {
+      els.wsStatus.textContent = '● 离线';
+      els.wsStatus.classList.remove('ws-connected');
+      els.wsStatus.classList.add('ws-disconnected');
+      state.remoteMerged = null;
+      state.peerCount = 0;
+      els.peersCount.textContent = '0';
+      renderPeers([]);
+    };
+
+    ws.onPeerJoin = (peer) => {
+      state.peerCount++;
+      els.peersCount.textContent = state.peerCount;
+    };
+
+    ws.onPeerLeave = (peerId) => {
+      state.peerCount = Math.max(0, state.peerCount - 1);
+      els.peersCount.textContent = state.peerCount;
+    };
+
+    ws.onStateUpdate = (stateData) => {
+      const { peers, merged_color } = stateData;
+      state.peerCount = peers.filter(p => p.id !== state.deviceId).length;
+      els.peersCount.textContent = state.peerCount;
+
+      if (merged_color && state.peerCount > 0) {
+        state.remoteMerged = {
+          rgb: { r: merged_color.r, g: merged_color.g, b: merged_color.b },
+        };
+      } else {
+        state.remoteMerged = null;
+      }
+
+      renderPeers(peers.filter(p => p.id !== state.deviceId));
+    };
+
+    ws.connect();
+  }
+
+  function renderPeers(peers) {
+    if (!peers || peers.length === 0) {
+      els.peersList.innerHTML = '<div class="peer-empty">暂无其他设备在线</div>';
+      return;
+    }
+    const html = peers.map(p => {
+      const color = p.color ? `rgb(${p.color.r}, ${p.color.g}, ${p.color.b})` : '#555';
+      const emotion = p.emotion_label || '—';
+      const energyPct = p.overall_energy ? Math.min(100, p.overall_energy * 100).toFixed(0) : 0;
+      const shortId = p.id ? p.id.slice(0, 8) : '----';
+      return `
+        <div class="peer-card">
+          <div class="peer-top">
+            <div class="peer-color-dot" style="background: ${color}"></div>
+            <div class="peer-info">
+              <div class="peer-emotion">${emotion}</div>
+              <div class="peer-id">#${shortId}</div>
+            </div>
+          </div>
+          <div class="peer-energy-bar">
+            <div class="peer-energy-fill" style="width: ${energyPct}%"></div>
+          </div>
+          <div class="peer-stats">
+            <span>能量 ${energyPct}%</span>
+            <span>${p.is_silent ? '静默' : '活跃'}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    els.peersList.innerHTML = html;
+  }
+
+  function updateLegendColors(outputRgb) {
+    const outColor = `rgb(${Math.round(outputRgb.r)}, ${Math.round(outputRgb.g)}, ${Math.round(outputRgb.b)})`;
+    const localColor = state.localResult
+      ? `rgb(${Math.round(state.localResult.rgb.r)}, ${Math.round(state.localResult.rgb.g)}, ${Math.round(state.localResult.rgb.b)})`
+      : '#6a9cff';
+    const remoteColor = state.remoteMerged
+      ? `rgb(${Math.round(state.remoteMerged.rgb.r)}, ${Math.round(state.remoteMerged.rgb.g)}, ${Math.round(state.remoteMerged.rgb.b)})`
+      : '#6affa0';
+
+    const localDot = document.querySelector('.legend-local');
+    const remoteDot = document.querySelector('.legend-remote');
+    const resultDot = document.querySelector('.legend-result');
+    if (localDot) localDot.style.background = localColor;
+    if (remoteDot) remoteDot.style.background = remoteColor;
+    if (resultDot) resultDot.style.background = outColor;
+  }
+
   function bindEvents() {
     els.btnStart.addEventListener('click', start);
     els.btnStop.addEventListener('click', stop);
@@ -353,6 +523,16 @@
     els.btnClear.addEventListener('click', clearData);
     els.btnRefreshReplay.addEventListener('click', fetchHistory);
     els.btnPlayReplay.addEventListener('click', togglePlayReplay);
+
+    els.mixSlider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      state.mixLocalWeight = val / 100;
+      els.mixValue.textContent = val + '%';
+      if (state.localResult) {
+        updateUI(state.localResult);
+      }
+    });
+
     window.addEventListener('resize', () => {
       initCanvases();
     });
@@ -361,6 +541,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     initCanvases();
     bindEvents();
+    initWS();
     setStatus('idle', '准备就绪，请点击"启动麦克风"');
   });
 })();

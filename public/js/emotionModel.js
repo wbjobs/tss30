@@ -7,6 +7,9 @@
     HIGH: { min: 0.6, max: 1.0, label: 'high' },
   };
 
+  const SILENCE_THRESHOLD = 0.018;
+  const SILENCE_MIN_DURATION_MS = 3000;
+
   const EMOTIONS = {
     FIERCE: { label: '激昂', color: { h: 0, s: 85, l: 55 } },
     ENERGETIC: { label: '活力', color: { h: 25, s: 90, l: 58 } },
@@ -17,6 +20,7 @@
     MELANCHOLY: { label: '忧郁', color: { h: 260, s: 55, l: 50 } },
     MYSTERIOUS: { label: '神秘', color: { h: 300, s: 65, l: 48 } },
     NEUTRAL: { label: '平静', color: { h: 140, s: 40, l: 60 } },
+    SILENCE: { label: '静默', color: { h: 0, s: 0, l: 30 } },
   };
 
   function splitFrequencyBands(frequencyData) {
@@ -131,10 +135,22 @@
     };
   }
 
-  function computeEmotionColor(features) {
+  function computeEmotionColor(features, isSilent = false) {
     const { low_mean, mid_peak, high_variance, overall_energy, band_ratios } = features;
     const energy = overall_energy;
     const { low, mid, high } = band_ratios;
+
+    if (isSilent) {
+      const hsl = { h: 0, s: 0, l: 28 };
+      const rgb = { r: 72, g: 72, b: 72 };
+      return {
+        hsl,
+        rgb,
+        emotion_label: EMOTIONS.SILENCE.label,
+        dominance: 'silence',
+        is_silent: true,
+      };
+    }
 
     let targetEmotion;
     let blendFactor = 0;
@@ -210,25 +226,150 @@
       rgb,
       emotion_label: targetEmotion.label,
       dominance: determineDominance(features),
+      is_silent: false,
     };
   }
 
-  function processAudioFrame(frequencyData) {
+  let _silenceStartTs = null;
+  let _lastIsSilent = false;
+
+  function checkSilence(features, nowTs = Date.now()) {
+    const isLow = features.overall_energy < SILENCE_THRESHOLD;
+    if (isLow) {
+      if (_silenceStartTs === null) _silenceStartTs = nowTs;
+      const dur = nowTs - _silenceStartTs;
+      const isSilent = dur >= SILENCE_MIN_DURATION_MS;
+      _lastIsSilent = isSilent;
+      return { is_silent: isSilent, silence_duration_ms: dur };
+    } else {
+      _silenceStartTs = null;
+      _lastIsSilent = false;
+      return { is_silent: false, silence_duration_ms: 0 };
+    }
+  }
+
+  function processAudioFrame(frequencyData, nowTs = Date.now()) {
     const features = extractFeatures(frequencyData);
-    const emotionResult = computeEmotionColor(features);
+    const silenceInfo = checkSilence(features, nowTs);
+    const emotionResult = computeEmotionColor(features, silenceInfo.is_silent);
     return {
       features,
       ...emotionResult,
+      silence_duration_ms: silenceInfo.silence_duration_ms,
+    };
+  }
+
+  function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if (max === min) {
+      h = 0; s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    return {
+      h: Math.round(h * 360 * 10) / 10,
+      s: Math.round(s * 100 * 10) / 10,
+      l: Math.round(l * 100 * 10) / 10,
+    };
+  }
+
+  function mixColorsRgb(colors) {
+    if (!colors || !colors.length) return { r: 128, g: 128, b: 128 };
+    let r = 0, g = 0, b = 0;
+    colors.forEach(c => {
+      r += c.r || 0;
+      g += c.g || 0;
+      b += c.b || 0;
+    });
+    return {
+      r: Math.round(r / colors.length),
+      g: Math.round(g / colors.length),
+      b: Math.round(b / colors.length),
+    };
+  }
+
+  function blendColorWeighted(local, remote, localWeight = 0.5) {
+    const remoteWeight = Math.max(0, Math.min(1, 1 - localWeight));
+    const w = Math.max(0, Math.min(1, localWeight));
+    return {
+      r: Math.round(local.r * w + remote.r * remoteWeight),
+      g: Math.round(local.g * w + remote.g * remoteWeight),
+      b: Math.round(local.b * w + remote.b * remoteWeight),
+    };
+  }
+
+  function blendHslWeighted(localHsl, remoteHsl, localWeight = 0.5) {
+    const w = Math.max(0, Math.min(1, localWeight));
+    const rw = 1 - w;
+
+    let hDiff = remoteHsl.h - localHsl.h;
+    if (hDiff > 180) hDiff -= 360;
+    if (hDiff < -180) hDiff += 360;
+    let h = localHsl.h + hDiff * rw;
+    h = ((h % 360) + 360) % 360;
+
+    return {
+      h: Math.round(h * 10) / 10,
+      s: Math.round((localHsl.s * w + remoteHsl.s * rw) * 10) / 10,
+      l: Math.round((localHsl.l * w + remoteHsl.l * rw) * 10) / 10,
+    };
+  }
+
+  function mixEmotionResults(results, weights) {
+    if (!results || !results.length) return null;
+    if (results.length === 1) return results[0];
+
+    const useWeights = weights && weights.length === results.length;
+    let totalW = 0;
+    if (useWeights) {
+      totalW = weights.reduce((s, w) => s + w, 0);
+      if (totalW <= 0) useWeights = false;
+    }
+
+    let r = 0, g = 0, b = 0;
+    let energy = 0;
+    results.forEach((res, i) => {
+      const w = useWeights ? weights[i] / totalW : 1 / results.length;
+      r += (res.rgb ? res.rgb.r : res.r || 0) * w;
+      g += (res.rgb ? res.rgb.g : res.g || 0) * w;
+      b += (res.rgb ? res.rgb.b : res.b || 0) * w;
+      energy += (res.features ? res.features.overall_energy : (res.energy || 0)) * w;
+    });
+
+    const rgb = { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+
+    return {
+      rgb,
+      hsl,
+      overall_energy: energy,
+      mixed_count: results.length,
     };
   }
 
   const EmotionModel = {
     FREQ_BANDS,
     EMOTIONS,
+    SILENCE_THRESHOLD,
+    SILENCE_MIN_DURATION_MS,
     extractFeatures,
     computeEmotionColor,
+    checkSilence,
     processAudioFrame,
     hslToRgb,
+    rgbToHsl,
+    mixColorsRgb,
+    blendColorWeighted,
+    blendHslWeighted,
+    mixEmotionResults,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
